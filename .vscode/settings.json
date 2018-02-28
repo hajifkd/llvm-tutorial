@@ -11,5 +11,28 @@
   "editor.formatOnSave": true,
   "C_Cpp.clang_format_fallbackStyle": "LLVM",
   "git.autofetch": true,
-  "files.eol": "\n"
+  "files.eol": "\n",
+  "files.associations": {
+    "string": "cpp",
+    "array": "cpp",
+    "*.tcc": "cpp",
+    "cctype": "cpp",
+    "clocale": "cpp",
+    "cstdint": "cpp",
+    "cstdio": "cpp",
+    "cstdlib": "cpp",
+    "cwchar": "cpp",
+    "exception": "cpp",
+    "functional": "cpp",
+    "initializer_list": "cpp",
+    "iosfwd": "cpp",
+    "limits": "cpp",
+    "memory": "cpp",
+    "new": "cpp",
+    "stdexcept": "cpp",
+    "tuple": "cpp",
+    "type_traits": "cpp",
+    "typeinfo": "cpp",
+    "utility": "cpp"
+  }
 }
