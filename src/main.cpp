@@ -1,3 +1,4 @@
+#include <iostream>
 #include <map>
 #include <memory>
 #include <stdio.h>
@@ -19,16 +20,35 @@ enum Token {
 static std::string IdentifierStr;
 static double NumVal;
 
+static char getBufChar() {
+  static unsigned int Index = 0;
+  static std::string Buf;
+
+  if (Buf.size() <= Index) {
+    fprintf(stderr, "ready > ");
+    std::getline(std::cin, Buf);
+    Buf += '\n';
+    Index = 0;
+  }
+
+  return Buf.c_str()[Index++];
+}
+
 static int gettok() {
   static int LastChar = ' ';
 
+  if (LastChar == '\n') {
+    LastChar = ' ';
+    return ';';
+  }
+
   while (isspace(LastChar))
-    LastChar = getchar();
+    LastChar = getBufChar();
 
   if (isalpha(LastChar)) {
     IdentifierStr = LastChar;
 
-    while (isalnum((LastChar = getchar())))
+    while (isalnum((LastChar = getBufChar())))
       IdentifierStr += LastChar;
 
     if (IdentifierStr == "def")
@@ -45,7 +65,7 @@ static int gettok() {
 
     do {
       NumStr += LastChar;
-      LastChar = getchar();
+      LastChar = getBufChar();
     } while (isdigit(LastChar) || LastChar == '.');
 
     NumVal = strtod(NumStr.c_str(), 0);
@@ -55,7 +75,7 @@ static int gettok() {
 
   if (LastChar == '#') {
     do
-      LastChar = getchar();
+      LastChar = getBufChar();
     while (LastChar != EOF && LastChar != '\n' && LastChar != '\r');
 
     if (LastChar != EOF)
@@ -66,7 +86,7 @@ static int gettok() {
     return tok_eof;
 
   int ThisChar = LastChar;
-  LastChar = getchar();
+  LastChar = getBufChar();
 
   return ThisChar;
 }
@@ -359,8 +379,6 @@ static void HandleTopLevelExpression() {
 
 static void MainLoop() {
   while (1) {
-    fprintf(stderr, "ready > ");
-
     switch (CurTok) {
     case tok_eof:
       return;
@@ -390,7 +408,6 @@ int main() {
   BinopPrecedence['-'] = 20;
   BinopPrecedence['*'] = 40;
 
-  fprintf(stderr, "ready > ");
   getNextToken();
   MainLoop();
 
