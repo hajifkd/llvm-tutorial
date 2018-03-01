@@ -37,11 +37,6 @@ static char getBufChar() {
 static int gettok() {
   static int LastChar = ' ';
 
-  if (LastChar == '\n') {
-    LastChar = ' ';
-    return ';';
-  }
-
   while (isspace(LastChar))
     LastChar = getBufChar();
 
