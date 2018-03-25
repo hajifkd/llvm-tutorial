@@ -6,9 +6,17 @@
 #include "llvm/IR/Function.h"
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/LLVMContext.h"
+#include "llvm/IR/LegacyPassManager.h"
 #include "llvm/IR/Module.h"
+#include "llvm/IR/PassManager.h"
 #include "llvm/IR/Type.h"
 #include "llvm/IR/Verifier.h"
+#include "llvm/Support/TargetSelect.h"
+#include "llvm/Target/TargetMachine.h"
+#include "llvm/Transforms/Scalar.h"
+#include "llvm/Transforms/Scalar/GVN.h"
+
+#include "./include/KaleidoscopeJIT.h"
 
 #include <iostream>
 #include <map>
@@ -234,7 +242,7 @@ static std::unique_ptr<ExprAST> ParseIdentifierExpr() {
 
       if (CurTok == ')')
         break;
-      if (CurTok != '.')
+      if (CurTok != ',')
         return LogError("expected ')' or ',' in argument list");
 
       getNextToken(); // Consume ','
@@ -359,7 +367,8 @@ static std::unique_ptr<PrototypeAST> ParseExtern() {
 static std::unique_ptr<FunctionAST> ParseTopLevelExpr() {
   if (auto E = ParseExpression()) {
     // anon fn
-    auto Proto = std::make_unique<PrototypeAST>("", std::vector<std::string>());
+    auto Proto = std::make_unique<PrototypeAST>("__anon_expr",
+                                                std::vector<std::string>());
 
     return std::make_unique<FunctionAST>(std::move(Proto), std::move(E));
   }
@@ -376,9 +385,48 @@ static IRBuilder<> Builder(TheContext);
 // llvm structure to hold functions and global variables
 // own whole `Value`s
 static std::unique_ptr<Module> TheModule;
+// pass manager - an optimizer
+static std::unique_ptr<legacy::FunctionPassManager> TheFPM;
 // keeps track of which values are defined in the given context
 // and their repr in LLVM IR
 static std::map<std::string, Value *> NamedValues;
+// JIT
+static std::unique_ptr<orc::KaleidoscopeJIT> TheJIT;
+
+static std::map<std::string, std::unique_ptr<PrototypeAST>> FunctionProtos;
+
+void InitializeModuleAndPassManager() {
+  TheModule = std::make_unique<Module>("my cool jit", TheContext);
+  TheModule->setDataLayout(TheJIT->getTargetMachine().createDataLayout());
+
+  TheFPM = std::make_unique<legacy::FunctionPassManager>(TheModule.get());
+
+  // "peephole" - bit manipulation?
+  TheFPM->add(createInstructionCombiningPass());
+
+  // Reassociation
+  TheFPM->add(createReassociatePass());
+
+  // eliminate common subexpressions
+  TheFPM->add(createGVNPass());
+
+  // Simplify control flow graphs
+  TheFPM->add(createCFGSimplificationPass());
+
+  // See llvm::legacy::FunctionPassManager instead?
+  TheFPM->doInitialization();
+}
+
+Function *getFunction(std::string Name) {
+  if (auto *F = TheModule->getFunction(Name))
+    return F;
+
+  auto FI = FunctionProtos.find(Name);
+  if (FI != FunctionProtos.end())
+    return FI->second->codegen();
+
+  return nullptr;
+}
 
 Value *LogErrorV(const char *Str) {
   LogError(Str);
@@ -422,7 +470,7 @@ Value *BinaryExprAST::codegen() {
 
 Value *CallExprAST::codegen() {
   // Look up the name
-  Function *CalleeF = TheModule->getFunction(Callee);
+  Function *CalleeF = getFunction(Callee);
   if (!CalleeF)
     return LogErrorV("Unknown function called");
 
@@ -456,10 +504,9 @@ Function *PrototypeAST::codegen() {
 }
 
 Function *FunctionAST::codegen() {
-  Function *TheFunction = TheModule->getFunction(Proto->getName());
-
-  if (!TheFunction)
-    TheFunction = Proto->codegen();
+  auto &P = *Proto;
+  FunctionProtos[Proto->getName()] = std::move(Proto);
+  Function *TheFunction = getFunction(P.getName());
 
   if (!TheFunction)
     return nullptr;
@@ -479,6 +526,8 @@ Function *FunctionAST::codegen() {
 
     verifyFunction(*TheFunction);
 
+    TheFPM->run(*TheFunction);
+
     return TheFunction;
   }
 
@@ -494,6 +543,8 @@ static void HandleDefinition() {
       fprintf(stderr, "Read function definition:");
       FnIR->print(errs());
       fprintf(stderr, "\n");
+      TheJIT->addModule(std::move(TheModule));
+      InitializeModuleAndPassManager();
     }
   } else {
     getNextToken();
@@ -506,6 +557,7 @@ static void HandleExtern() {
       fprintf(stderr, "Read extern: ");
       FnIR->print(errs());
       fprintf(stderr, "\n");
+      FunctionProtos[ProtoAST->getName()] = std::move(ProtoAST);
     }
   } else {
     getNextToken();
@@ -515,9 +567,19 @@ static void HandleExtern() {
 static void HandleTopLevelExpression() {
   if (auto FnAST = ParseTopLevelExpr()) {
     if (auto *FnIR = FnAST->codegen()) {
-      fprintf(stderr, "Read top-level expression:");
+      fprintf(stderr, "Read top-level expression: ");
       FnIR->print(errs());
-      fprintf(stderr, "\n");
+
+      auto H = TheJIT->addModule(std::move(TheModule));
+      InitializeModuleAndPassManager();
+
+      auto ExprSymbol = TheJIT->findSymbol("__anon_expr");
+      assert(ExprSymbol && "Function not found");
+
+      double (*FP)() = (double (*)())(intptr_t)ExprSymbol.getAddress();
+      fprintf(stderr, "Evaluated to %f\n", FP());
+
+      TheJIT->removeModule(H);
     }
   } else {
     getNextToken();
@@ -550,6 +612,10 @@ static void MainLoop() {
 }
 
 int main() {
+  InitializeNativeTarget();
+  InitializeNativeTargetAsmPrinter();
+  InitializeNativeTargetAsmParser();
+
   BinopPrecedence['<'] = 10;
   BinopPrecedence['+'] = 20;
   BinopPrecedence['-'] = 20;
@@ -557,7 +623,9 @@ int main() {
 
   getNextToken();
 
-  TheModule = std::make_unique<Module>("my cool jit", TheContext);
+  TheJIT = std::make_unique<orc::KaleidoscopeJIT>();
+
+  InitializeModuleAndPassManager();
   MainLoop();
 
   TheModule->print(errs(), nullptr);
